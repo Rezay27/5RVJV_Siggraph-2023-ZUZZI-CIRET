@@ -3,9 +3,12 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using TreeEditor;
+using Unity.Collections;
 using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Jobs;
+using Unity.Jobs;
 using Random = UnityEngine.Random;
 
 public class Grid3D : MonoBehaviour
@@ -15,12 +18,17 @@ public class Grid3D : MonoBehaviour
     public int nbBubulle;
     public int maxIterProjection = 5;
     public int maxIterPoisson = 5;
-    public Vector3[,,] velocity;
-    public float[,,] pressures;
+    //public Vector3[,,] velocity;
+    public Vector3[] velocity;
+    //public float[,,] pressures;
+    public float[] pressures;
     public GameObject bubullePrefab;
     public List<GameObject> bubulles;
     private float minx, maxx, miny, maxy, minz, maxz;
-    private float[,,] divergence;
+    //private float[,,] divergence;
+    private float[] divergence;
+
+    //private NativeArray<> mabite;
 /*
     [SerializeField] private ComputeShader bubulleShader;
     [SerializeField] private Mesh particleMesh;
@@ -32,13 +40,17 @@ public class Grid3D : MonoBehaviour
         public Vector3 scale;
     };
     */
+    int getIndex(int x, int y, int z)
+    {
+        return x * (cells_y * cells_z) + y * cells_z + z;
+    }
     void Awake()
     {
         //Init Grid et bubulles
         Vector3 gridOrg = transform.position;
-        velocity = new Vector3[cells_x, cells_y, cells_z];
-        pressures = new float[cells_x, cells_y, cells_z];
-        divergence = new float[cells_x, cells_y, cells_z];
+        velocity = new Vector3[cells_x*cells_y*cells_z];
+        pressures = new float[cells_x*cells_y*cells_z];
+        divergence = new float[cells_x*cells_y*cells_z];
         
         //Init grid avec les cells à 0 partout
         for (int i = 0; i < cells_x; i++)
@@ -48,11 +60,11 @@ public class Grid3D : MonoBehaviour
                 for (int k = 0; k < cells_z; k++)
                 {
                     //velocity[i, j, k] = Vector3.zero;
-                    velocity[i, j, k] = new Vector3(Random.Range(-1,1)*2,
+                    velocity[i*(cells_y*cells_z)+j*cells_z+k] = new Vector3(Random.Range(-1,1)*2,
                         Random.Range(-1,1)*2,
                         Random.Range(-1,1)*2);
-                    pressures[i, j, k] = j+1;
-                    divergence[i, j, k] = 0.0f;
+                    pressures[i*(cells_y*cells_z)+j*cells_z+k] = j+1;
+                    divergence[i*(cells_y*cells_z)+j*cells_z+k] = 0.0f;
                 }
             }
         }
@@ -167,7 +179,7 @@ public class Grid3D : MonoBehaviour
     }
 
     //Interpolation trilinéaire retournant un float
-    public float TrilinéairInterpolate(float[,,] gridData, Vector3 pos)
+    public float TrilinéairInterpolate(float[] gridData, Vector3 pos)
     {
         
         Vector3 gridPosition = (pos - transform.position); 
@@ -190,10 +202,10 @@ public class Grid3D : MonoBehaviour
         float zd = (int)(Mathf.Repeat(gridPosition.z-z0 - miny, maxy) + miny);
         
         //Interpolation en x
-        float c00 = gridData[x0, y0, z0] * (1 - xd) + gridData[x1, y0, z0] * xd;
-        float c10 = gridData[x0, y1, z0] * (1 - xd) + gridData[x1, y1, z0] * xd;
-        float c01 = gridData[x0, y0, z1] * (1 - xd) + gridData[x1, y0, z1] * xd;
-        float c11 = gridData[x0, y1, z1] * (1 - xd) + gridData[x1, y1, z1] * xd;
+        float c00 = gridData[getIndex(x0, y0, z0)] * (1 - xd) + gridData[getIndex(x1, y0, z0)] * xd;
+        float c10 = gridData[getIndex(x0, y1, z0)] * (1 - xd) + gridData[getIndex(x1, y1, z0)] * xd;
+        float c01 = gridData[getIndex(x0, y0, z1)] * (1 - xd) + gridData[getIndex(x1, y0, z1)] * xd;
+        float c11 = gridData[getIndex(x0, y1, z1)] * (1 - xd) + gridData[getIndex(x1, y1, z1)] * xd;
         
         //Interpolation en y
         float c0 = c00 * (1 - yd) + c10 * yd;
@@ -206,7 +218,7 @@ public class Grid3D : MonoBehaviour
     }
 
     //Interpolation trilinéaire retournant un Vector3
-    public Vector3 TrilinéairInterpolate(Vector3[,,] gridData, Vector3 pos)
+    public Vector3 TrilinéairInterpolate(Vector3[] gridData, Vector3 pos)
     {
         
         Vector3 gridPosition = (pos - transform.position); 
@@ -229,10 +241,10 @@ public class Grid3D : MonoBehaviour
         float zd = (int)(Mathf.Repeat(gridPosition.z-z0 - miny, maxy) + miny);
             
         //Interpolation en x
-        Vector3 c00 = gridData[x0, y0, z0] * (1 - xd) + gridData[x1, y0, z0] * xd;
-        Vector3 c10 = gridData[x0, y1, z0] * (1 - xd) + gridData[x1, y1, z0] * xd;
-        Vector3 c01 = gridData[x0, y0, z1] * (1 - xd) + gridData[x1, y0, z1] * xd;
-        Vector3 c11 = gridData[x0, y1, z1] * (1 - xd) + gridData[x1, y1, z1] * xd;
+        Vector3 c00 = gridData[getIndex(x0, y0, z0)] * (1 - xd) + gridData[getIndex(x1, y0, z0)] * xd;
+        Vector3 c10 = gridData[getIndex(x0, y1, z0)] * (1 - xd) + gridData[getIndex(x1, y1, z0)] * xd;
+        Vector3 c01 = gridData[getIndex(x0, y0, z1)] * (1 - xd) + gridData[getIndex(x1, y0, z1)] * xd;
+        Vector3 c11 = gridData[getIndex(x0, y1, z1)] * (1 - xd) + gridData[getIndex(x1, y1, z1)] * xd;
         
         //Interpolation en y
         Vector3 c0 = c00 * (1 - yd) + c10 * yd;
@@ -256,7 +268,7 @@ public class Grid3D : MonoBehaviour
             {
                 for (int k = 0; k < cells_z; k++)
                 {
-                    pressures[i, j, k] = 0.0f;
+                    pressures[getIndex(i,j,k)] = 0.0f;
                 }
             }
         }
@@ -272,9 +284,9 @@ public class Grid3D : MonoBehaviour
                 {
                     for (int z = 1; z < cells_z - 1; z++)
                     {
-                        divergence[x, y, z] = (velocity[x + 1,y,z].x - velocity[x - 1,y,z].x + 
-                                              velocity[x,y + 1,z].y - velocity[x,y - 1,z].y +
-                                              velocity[x,y,z + 1].z - velocity[x,y,z - 1].z)/6;
+                        divergence[getIndex(x,y,z)] = (velocity[getIndex(x+1,y,z)].x - velocity[getIndex(x-1,y,z)].x + 
+                                              velocity[getIndex(x,y+1,z)].y - velocity[getIndex(x,y-1,z)].y +
+                                              velocity[getIndex(x,y,z+1)].z - velocity[getIndex(x,y,z-1)].z)/6;
                     }
                 }
             }
@@ -289,10 +301,10 @@ public class Grid3D : MonoBehaviour
                 {
                     for (int z = 1; z < cells_z - 1; z++)
                     {
-                        Vector3 pressureForce = new Vector3((pressures[x + 1,y,z] - pressures[x - 1,y,z]) / (2 * cells_x),
-                            (pressures[x,y + 1,z] - pressures[x,y - 1,z]) / (2 * cells_y),
-                            (pressures[x,y,z + 1] - pressures[x,y,z - 1]) / (2 * cells_z));
-                        velocity[x,y,z] -= pressureForce*dt;
+                        Vector3 pressureForce = new Vector3((pressures[getIndex(x+1,y,z)] - pressures[getIndex(x-1,y,z)]) / (2 * cells_x),
+                            (pressures[getIndex(x,y+1,z)] - pressures[getIndex(x,y-1,z)]) / (2 * cells_y),
+                            (pressures[getIndex(x,y,z+1)] - pressures[getIndex(x,y,z-1)]) / (2 * cells_z));
+                        velocity[getIndex(x,y,z)] -= pressureForce*dt;
                     }
                 }
             }
@@ -318,7 +330,7 @@ public class Grid3D : MonoBehaviour
         //On met un nombre d'itération qu'on veux pour la précision
         //et une tolérance maximum a l'erreur (précision)
         
-        float[,,] newPressures = new float[cells_x,cells_y,cells_z];
+        float[] newPressures = new float[cells_x*cells_y*cells_z];
         float error = 0.1f;
         float tolerance = 0.0001f;
         int iter = 0;
@@ -332,12 +344,12 @@ public class Grid3D : MonoBehaviour
                 {
                     for (int z = 1; z < cells_z - 1; z++)
                     {
-                        float newPressure = pressures[x - 1, y, z] + pressures[x + 1, y, z] + pressures[x, y - 1, z] +
-                                            pressures[x, y + 1, z] + pressures[x, y, z - 1] + pressures[x, y, z + 1];
-                        newPressure += divergence[x, y, z];
+                        float newPressure = pressures[getIndex(x-1,y,z)] + pressures[getIndex(x+1,y,z)] + pressures[getIndex(x,y-1,z)] +
+                                            pressures[getIndex(x,y+1,z)] + pressures[getIndex(x,y,z-1)] + pressures[getIndex(x,y,z+1)];
+                        newPressure += divergence[getIndex(x,y,z)];
                         newPressure /= 6;
-                        newPressures[x, y, z] = newPressure;
-                        error += Mathf.Abs(newPressure - pressures[x, y, z]);
+                        newPressures[getIndex(x,y,z)] = newPressure;
+                        error += Mathf.Abs(newPressure - pressures[getIndex(x,y,z)]);
                     }
                 }
             }
@@ -349,7 +361,7 @@ public class Grid3D : MonoBehaviour
                 {
                     for (int z = 1; z < cells_z - 1; z++)
                     {
-                        pressures[x,y,z] = newPressures[x, y, z];
+                        pressures[getIndex(x,y,z)] = newPressures[getIndex(x,y,z)];
                     }
                 }
             }
