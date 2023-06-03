@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using TreeEditor;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.VisualScripting;
 using UnityEngine;
@@ -20,26 +21,23 @@ public class Grid3D : MonoBehaviour
     public int maxIterPoisson = 5;
     //public Vector3[,,] velocity;
     public Vector3[] velocity;
+    private NativeArray<Vector3> velocity_j;
     //public float[,,] pressures;
     public float[] pressures;
+    private NativeArray<float> pressure_j;
     public GameObject bubullePrefab;
     public List<GameObject> bubulles;
     private float minx, maxx, miny, maxy, minz, maxz;
     //private float[,,] divergence;
     private float[] divergence;
+    private NativeArray<float> divergence_j;
+    private Vector3[] bubullesPos;
+    private Vector3[] bubullesVel;
+    private NativeArray<Vector3> bubullesPos_j;
+    private NativeArray<Vector3> bubullesVel_j;
+    private JobHandle AdvectioJobHandle;
 
-    //private NativeArray<> mabite;
-/*
-    [SerializeField] private ComputeShader bubulleShader;
-    [SerializeField] private Mesh particleMesh;
-    private ComputeBuffer verticesBuffer;
-    private ComputeBuffer instanceDataBuffer;
-    private InstanceData[] instanceData;
-    struct InstanceData {
-        public Vector3 position;
-        public Vector3 scale;
-    };
-    */
+    UpdateAdvectionJob _updateAdvectionJob;
     int getIndex(int x, int y, int z)
     {
         return x * (cells_y * cells_z) + y * cells_z + z;
@@ -51,7 +49,8 @@ public class Grid3D : MonoBehaviour
         velocity = new Vector3[cells_x*cells_y*cells_z];
         pressures = new float[cells_x*cells_y*cells_z];
         divergence = new float[cells_x*cells_y*cells_z];
-        
+        bubullesPos = new Vector3[nbBubulle];
+        bubullesVel = new Vector3[nbBubulle];
         //Init grid avec les cells à 0 partout
         for (int i = 0; i < cells_x; i++)
         {
@@ -91,50 +90,135 @@ public class Grid3D : MonoBehaviour
                 Random.Range(-0.1f,0.1f),
                 Random.Range(-0.1f,0.1f));
             bubulle.name = "bubulle" + i;
+            bubullesPos[i] = bubulle.transform.position;
+            bubullesVel[i] = bubulle.GetComponent<Rigidbody>().velocity;
         }
-        //setting up compute shader for rendering
-        /*
-        int vertexCount = particleMesh.vertexCount;
-        int vertexStride = sizeof(float) * 6;
-        int vertexDataSize = vertexCount * vertexStride;
-        int paddedVertexDataSize = Mathf.CeilToInt((float)vertexDataSize / vertexStride) * vertexStride; // round up to nearest multiple of buffer stride
-        float[] paddedVertexData = new float[paddedVertexDataSize / sizeof(float)];
-        Vector3[] vertices = particleMesh.vertices;
-        Vector3[] normals = particleMesh.normals;
-        for (int i = 0; i < vertexCount; i++)
-        {
-            int startIndex = i * 6;
-            paddedVertexData[startIndex] = vertices[i].x;
-            paddedVertexData[startIndex + 1] = vertices[i].y;
-            paddedVertexData[startIndex + 2] = vertices[i].z;
-            paddedVertexData[startIndex + 3] = normals[i].x;
-            paddedVertexData[startIndex + 4] = normals[i].y;
-            paddedVertexData[startIndex + 5] = normals[i].z;
-        }
-        verticesBuffer = new ComputeBuffer(paddedVertexData.Length / 6, vertexStride);
-        verticesBuffer.SetData(paddedVertexData);
-        
-        instanceDataBuffer = new ComputeBuffer(nbBubulle, sizeof(float) * 6);
-        instanceData = new InstanceData[nbBubulle];
-        for (int i = 0; i < nbBubulle; i++) {
-            instanceData[i].position = bubulles[i].transform.position; // set initial position for each instance
-            instanceData[i].scale = Vector3.one; // set scale for each instance
-        }
-        instanceDataBuffer.SetData(instanceData);
-        bubulleShader.SetBuffer(0, "verticesBuffer", verticesBuffer);
-        bubulleShader.SetBuffer(0, "instanceDataBuffer", instanceDataBuffer);
-        */
-    }
 
+        velocity_j = new NativeArray<Vector3>(velocity, Allocator.Persistent);
+        pressure_j = new NativeArray<float>(pressures, Allocator.Persistent);
+        divergence_j = new NativeArray<float>(divergence, Allocator.Temp);
+        bubullesPos_j = new NativeArray<Vector3>(bubullesPos, Allocator.Persistent);
+        bubullesVel_j = new NativeArray<Vector3>(bubullesVel, Allocator.Persistent);
+    }
     void Update()
     {
-        UpdateFluid(Time.deltaTime);
+        //UpdateFluid(Time.deltaTime);
+        for (int i = 0; i < bubullesPos.Length; i++)
+        {
+            bubullesPos_j[i] = bubulles[i].transform.position;
+            bubullesVel_j[i]=bubulles[i].GetComponent<Rigidbody>().velocity;
+        }
+        _updateAdvectionJob = new UpdateAdvectionJob()
+        {
+            cells_x_j = cells_x,
+            cells_y_j = cells_y,
+            cells_z_j = cells_y,
+            velocity = velocity_j,
+            dt = Time.deltaTime,
+            gridPos = transform.position,
+            bubullePos = bubullesPos_j,
+            bubulleVel = bubullesVel_j
+
+        };
+        AdvectioJobHandle = _updateAdvectionJob.Schedule(bubullesPos.Length, 64);
     }
 
+    private void LateUpdate()
+    {
+        AdvectioJobHandle.Complete();
+        for (int i = 0; i < bubullesPos.Length; i++)
+        {
+            bubulles[i].transform.position=bubullesPos_j[i];
+            bubulles[i].GetComponent<Rigidbody>().velocity=bubullesVel_j[i];
+        }
+    }
+
+    [BurstCompile]
+    private struct UpdateAdvectionJob : IJobParallelFor
+    {
+        [ReadOnly]
+        public int cells_x_j, cells_y_j, cells_z_j;
+
+        public NativeArray<Vector3> bubullePos;
+        public NativeArray<Vector3> bubulleVel;
+        [ReadOnly]
+        public NativeArray<Vector3> velocity;
+        [ReadOnly]
+        public float dt;
+        [ReadOnly]
+        public Vector3 gridPos;
+        public void Execute(int index)
+        {
+            
+            float minx = gridPos.x;
+            float miny = gridPos.y;
+            float minz = gridPos.z;
+            float maxx = gridPos.x + cells_x_j;
+            float maxy = gridPos.y + cells_y_j;
+            float maxz = gridPos.z + cells_z_j;
+            Vector3 bubullepos = bubullePos[index];
+            Vector3 vel = TrilinearInterpolate(velocity, bubullepos);
+            Vector3 newpos = bubullepos + dt * vel;
+            vel = TrilinearInterpolate(velocity, newpos);
+            bubulleVel[index] = new Vector3(vel.x, vel.y + bubulleVel[index].y, vel.z);
+            newpos.x = Mathf.Repeat(newpos.x - minx, maxx) + minx;
+            newpos.y = Mathf.Repeat(newpos.y - miny, maxy) + miny;
+            newpos.z = Mathf.Repeat(newpos.z - minz, maxz) + minz;
+            bubullePos[index] = newpos;
+        }
+        int getIndex(int x, int y, int z)
+        {
+            return x * (cells_y_j * cells_z_j) + y * cells_z_j + z;
+        }
+        public Vector3 TrilinearInterpolate(NativeArray<Vector3> gridData, Vector3 pos)
+        {
+            float minx = gridPos.x;
+            float miny = gridPos.y;
+            float minz = gridPos.z;
+            float maxx = gridPos.x + cells_x_j;
+            float maxy = gridPos.y + cells_y_j;
+            float maxz = gridPos.z + cells_z_j;
+        
+            Vector3 gridPosition = (pos - gridPos); 
+        
+            int x0 = Mathf.FloorToInt(gridPosition.x);
+            int y0 = Mathf.FloorToInt(gridPosition.y);
+            int z0 = Mathf.FloorToInt(gridPosition.z);
+        
+            x0 = (int)(Mathf.Repeat(x0 - minx, maxx) + minx);
+            y0 = (int)(Mathf.Repeat(y0 - miny, maxy) + miny);
+            z0 = (int)(Mathf.Repeat(z0 - minz, maxz) + minz);
+
+            //Debug.Log("x0: "+x0+" y0: "+y0+" z0: "+z0);
+            int x1 = (int)(Mathf.Repeat(x0+1 - minx, maxx) + minx);
+            int y1 = (int)(Mathf.Repeat(y0+1 - miny, maxy) + miny);
+            int z1 = (int)(Mathf.Repeat(z0+1 - minz, maxz) + minz);
+
+            float xd = (int)(Mathf.Repeat(gridPosition.x-x0 - minx, maxx) + minx);
+            float yd = (int)(Mathf.Repeat(gridPosition.y-y0 - miny, maxy) + miny);
+            float zd = (int)(Mathf.Repeat(gridPosition.z-z0 - miny, maxy) + miny);
+            
+            //Interpolation en x
+            Vector3 c00 = gridData[getIndex(x0, y0, z0)] * (1 - xd) + gridData[getIndex(x1, y0, z0)] * xd;
+            Vector3 c10 = gridData[getIndex(x0, y1, z0)] * (1 - xd) + gridData[getIndex(x1, y1, z0)] * xd;
+            Vector3 c01 = gridData[getIndex(x0, y0, z1)] * (1 - xd) + gridData[getIndex(x1, y0, z1)] * xd;
+            Vector3 c11 = gridData[getIndex(x0, y1, z1)] * (1 - xd) + gridData[getIndex(x1, y1, z1)] * xd;
+        
+            //Interpolation en y
+            Vector3 c0 = c00 * (1 - yd) + c10 * yd;
+            Vector3 c1 = c01 * (1 - yd) + c11 * yd;
+        
+            //Interpolation en z
+            Vector3 c = c0 * (1 - zd) + c1 * zd;
+        
+            return c;
+        }
+    }
     //Maj particules et fluides
     void UpdateFluid(float dt)
     {
         // Etape 1: Advection
+        
         foreach (GameObject bubulle in bubulles)
         {
             Advection(bubulle, dt);
@@ -155,7 +239,7 @@ public class Grid3D : MonoBehaviour
         //bubulle.GetComponent<Bubulle>().force += bubulle.GetComponent<Bubulle>().rigidbody.mass * Physics.gravity;
 
         Vector3 bubullepos = bubulle.transform.position;
-        Vector3 bubullevec = bubulle.GetComponent<Bubulle>().velocity;
+        //Vector3 bubullevec = bubulle.GetComponent<Bubulle>().velocity;
         Rigidbody bubulleRigid = bubulle.GetComponent<Rigidbody>();
         //On récupère la vélocité des à notre position par rapport aux autre cellules
         Vector3 vel = TrilinéairInterpolate(velocity, bubullepos);
@@ -369,23 +453,11 @@ public class Grid3D : MonoBehaviour
             iter++;
         }
     }
-    
-    /*
-    void ComputeRender()
-    {
-        for (int i = 0; i < nbBubulle; i++)
-        {
-            instanceData[i].position = bubulles[i].transform.position;
-        }
-        instanceDataBuffer.SetData(instanceData);
-        
-        bubulleShader.Dispatch(0, nbBubulle*particleMesh.vertexCount/8,1,1);    
-    }
 
     private void OnDestroy()
     {
-        verticesBuffer.Release();
-        instanceDataBuffer.Release();
+        pressure_j.Dispose();
+        velocity_j.Dispose();
+        divergence_j.Dispose();
     }
-    */
 }
